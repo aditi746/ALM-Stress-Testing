@@ -8,7 +8,7 @@ st.title("💊 ALM Stress Testing Dashboard")
 st.caption("R&D Intensity • Regulatory Shocks • IP Expiry → Financial Risk in Pharma")
 
 # ----------------------------
-# Data (synthetic defaults, can replace with CSV)
+# Default synthetic dataset
 # ----------------------------
 default_df = pd.DataFrame({
     "Year": list(range(2015, 2025)),
@@ -34,26 +34,25 @@ df = pd.read_csv(uploaded) if uploaded else default_df.copy()
 df = df.sort_values("Year").reset_index(drop=True)
 
 # ----------------------------
-# Core scenario controls
+# Core controls
 # ----------------------------
 st.sidebar.header("🎛️ Core Controls")
 rd_bps = st.sidebar.slider("Δ R&D (bps of Revenue)", -500, 1500, 300, 25)
 rd_cash_now_pct = st.sidebar.slider("R&D Cash Now (%)", 0, 100, 80, 5)
 price_cap = st.sidebar.slider("Regulatory Price Cap (%)", 0, 50, 0, 5)
-compliance_cost_pct = st.sidebar.slider("Compliance Cost (% of Revenue)", 0, 10, 0, 1)
+comp_cost_pct = st.sidebar.slider("Compliance Cost (% of Revenue)", 0, 10, 0, 1)
 preset = st.sidebar.selectbox("Scenario Preset", ["Base", "R&D Surge", "Reg Shock", "Patent Cliff", "Black Swan"])
 new_debt = st.sidebar.number_input("New Funding — Debt ($B)", 0.0, 100.0, 0.0, 0.1)
 new_equity = st.sidebar.number_input("New Funding — Equity ($B)", 0.0, 100.0, 0.0, 0.1)
 tax_rate = st.sidebar.slider("Tax Rate (%)", 0, 40, 18, 1)
 
-# Advanced (WC changes)
 with st.sidebar.expander("Advanced Working Capital"):
     dso_delta = st.slider("Δ DSO (days)", -15, 30, 0, 1)
     dpo_delta = st.slider("Δ DPO (days)", -15, 30, 0, 1)
     dio_delta = st.slider("Δ DIO (days)", -30, 30, 0, 1)
 
 # ----------------------------
-# Scenario engine (returns latest year snapshot)
+# Scenario engine
 # ----------------------------
 def run_scenario(df, rd_bps=0, rd_cash_now_pct=80, price_cap=0, comp_cost_pct=0,
                  preset="Base", new_debt=0, new_equity=0, tax_rate=18,
@@ -104,8 +103,79 @@ def run_scenario(df, rd_bps=0, rd_cash_now_pct=80, price_cap=0, comp_cost_pct=0,
     scn["Liquidity12m"] = (scn["Cash_Begin"] + scn["Undrawn_Revolver"]) / (scn["Capex"] + scn["RD_CashNow"] + scn["PrincipalDue_12m"])
     scn["Runway_months"] = np.where(scn["FundingGap"]>0, scn["Cash_Begin"]/(scn["FundingGap"]/12), np.inf)
 
-    return scn.iloc[-1]  # return only latest year snapshot
+    return scn.iloc[-1]  # latest year snapshot
 
 # ----------------------------
-# KPI cards for selected scenario
-# -------------------------
+# KPI cards
+# ----------------------------
+sel = run_scenario(df, rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+                   price_cap=price_cap, comp_cost_pct=comp_cost_pct,
+                   preset=preset, new_debt=new_debt, new_equity=new_equity,
+                   tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta)
+
+st.subheader(f"📊 Key Metrics — {preset} Scenario")
+k = st.columns(5)
+k[0].metric("Funding Gap ($B)", f"{sel['FundingGap']:.2f}")
+k[1].metric("EBIT ($B)", f"{sel['EBIT']:.2f}")
+k[2].metric("OCF ($B)", f"{sel['OCF']:.2f}")
+k[3].metric("DSCR", f"{sel['DSCR']:.2f}")
+k[4].metric("ICR", f"{sel['ICR']:.2f}")
+
+st.markdown("---")
+
+# ----------------------------
+# Funding Gap across scenarios
+# ----------------------------
+scenarios = {
+    "Base": run_scenario(df, preset="Base"),
+    "R&D Surge": run_scenario(df, preset="R&D Surge"),
+    "Reg Shock": run_scenario(df, preset="Reg Shock"),
+    "Patent Cliff": run_scenario(df, preset="Patent Cliff"),
+}
+scn_df = pd.DataFrame(scenarios).T
+
+st.subheader("🏛 Objective 2: Funding Gap Across Scenarios")
+st.bar_chart(scn_df[["FundingGap"]])
+st.caption("Regulatory shocks and R&D surges widen the funding gap compared to base case.")
+
+st.markdown("---")
+
+# ----------------------------
+# Sensitivity: Funding Gap vs R&D intensity
+# ----------------------------
+grid = list(range(0, 1201, 200))
+sens = pd.DataFrame([run_scenario(df, rd_bps=x).to_dict() for x in grid])
+sens["R&D_bps"] = grid
+
+st.subheader("📈 Objective 1: Sensitivity to R&D Intensity")
+st.line_chart(sens.set_index("R&D_bps")[["FundingGap"]])
+st.caption("Higher R&D intensity reduces EBIT & OCF, widening funding gaps.")
+
+st.markdown("---")
+
+# ----------------------------
+# Waterfall: Patent Cliff
+# ----------------------------
+st.subheader("💧 Objective 3: Patent Cliff — Sources vs Uses of Cash")
+pc = scenarios["Patent Cliff"]
+
+uses = {
+    "R&D cash now": pc["RD_CashNow"],
+    "Δ Working capital": pc["WC_Delta"],
+    "Capex": pc["Capex"],
+    "Debt service": pc["PrincipalDue_12m"],
+}
+sources = {
+    "Operating CF": -pc["OCF"],
+    "New funding": -(pc["NewFunding"]),
+}
+items = list(uses.items()) + list(sources.items())
+labels = [k for k,_ in items] + ["Gap"]
+vals = [v for _,v in items]
+gap = sum(vals); vals.append(gap)
+
+wf = go.Figure(go.Waterfall(x=labels, measure=["relative"]*len(items)+["total"], y=vals))
+wf.update_layout(title="Patent Cliff Cash Flow Breakdown", height=350)
+st.plotly_chart(wf, use_container_width=True)
+
+st.caption("Under IP expiry, revenues drop, margins compress, and R&D rises — creating a funding gap not covered by OCF or new funding.")
