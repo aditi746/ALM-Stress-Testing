@@ -247,38 +247,101 @@ st.caption("Mechanism: as R&D intensity rises, EBIT and OCF fall (short-term), w
 
 st.markdown("---")
 
-# -----------------------------------------------------------
-# WATERFALL — CORRECT MATH (Uses − Sources = Gap)
-# -----------------------------------------------------------
-st.subheader("💧 Objective 3: Patent Cliff — Correct Cash Flow Waterfall")
-pc = run_scenario(df, preset="Patent Cliff")
+# ----------------------------
+# Waterfall (WHO-style): Need → secured → expected → Gap
+# ----------------------------
+st.subheader("💧 Funding Gap Waterfall — Need vs Secured vs Expected")
 
-uses_pc = {
-    "R&D cash now": pc["R&D_scn"] * 0.80,   # default timing in engine
-    "Δ Working capital": pc["WC_Delta"],
-    "Capex": pc["Capex"],
-    "Debt service": pc["DebtService"],
-}
-sources_pc = {
-    "Operating CF": pc["OCF"],
-    "New funding": pc["NewFunding"],
-}
+# choose which scenario to show in the waterfall
+wf_scn = st.selectbox(
+    "Select scenario for waterfall",
+    ["Base", "R&D Surge", "Reg Shock", "Patent Cliff"],
+    index=["Base","R&D Surge","Reg Shock","Patent Cliff"].index("Patent Cliff")
+)
 
-total_uses = sum(uses_pc.values())
-total_sources = sum(sources_pc.values())
-gap_val = total_uses - total_sources
+# run that scenario with *current* sliders so this aligns with KPIs
+wf_row = run_scenario(
+    df,
+    rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+    price_cap=price_cap, comp_cost_pct=comp_cost_pct,
+    preset=wf_scn, new_debt=new_debt, new_equity=new_equity,
+    tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta
+)
 
-labels = list(uses_pc.keys()) + list(sources_pc.keys()) + ["Gap (Uses − Sources)"]
-vals   = list(uses_pc.values()) + [-v for v in sources_pc.values()] + [gap_val]
+# Components consistent with the engine
+need = float(             # Total cash need = Uses
+    wf_row["R&D_scn"] * (rd_cash_now_pct/100.0)
+  + wf_row["WC_Delta"]
+  + wf_row["Capex"]
+  + wf_row["DebtService"]   # principal + interest
+)
 
-wf = go.Figure(go.Waterfall(
+secured_oper_cf   = max(float(wf_row["OCF"]), 0.0)          # secured
+secured_committed = max(float(wf_row["NewFunding"]), 0.0)   # committed funding from sliders
+
+# "Expected/pipeline" = undrawn facilities you *could* tap (not yet used)
+expected_pipeline = max(float(wf_row["Undrawn_Revolver"]), 0.0)
+
+# Gap = need − secured − expected (never negative)
+gap_val = max(need - (secured_oper_cf + secured_committed + expected_pipeline), 0.0)
+gap_pct = (gap_val/need*100.0) if need > 0 else 0.0
+
+labels   = [
+    "Total cash need",
+    "Operating CF (secured)",
+    "Committed funding (secured)",
+    "Pipeline / Undrawn (expected)",
+    f"Funding gap ({gap_pct:.0f}%)"
+]
+measures = ["absolute", "relative", "relative", "relative", "total"]
+# Waterfall expects negative for subtractions in 'relative' steps
+values   = [need, -secured_oper_cf, -secured_committed, -expected_pipeline, 0]
+
+# Colors like your example
+COL_NEED     = "#0b2b53"   # dark navy
+COL_SECURED  = "#1aa1ff"   # blue
+COL_EXPECTED = "#9aa0a6"   # grey
+COL_GAP      = "#d61f45"   # red
+
+colors = [COL_NEED, COL_SECURED, COL_SECURED, COL_EXPECTED, COL_GAP]
+
+wf_fig = go.Figure(go.Waterfall(
     x=labels,
-    measure=["relative"] * len(vals),
-    y=vals
+    measure=measures,
+    y=values,
+    text=[f"{val:,.0f}" if i < 4 else f"{gap_val:,.0f}" for i,val in enumerate(values)],
+    textposition="outside",
+    connector={"line":{"color":"#cccccc","width":1}},
+    # per-bar color
+    increasing={"marker":{"color":COL_NEED}},   # not used here but kept for clarity
+    decreasing={"marker":{"color":COL_SECURED}},
+    totals={"marker":{"color":COL_GAP}}
 ))
-wf.update_layout(title="Patent Cliff Cash Flow Breakdown (Uses − Sources)", height=380, yaxis_title="$B")
-st.plotly_chart(wf, use_container_width=True)
+# plotly's 'increasing/decreasing/totals' palettes don't color each bar individually,
+# so set explicit marker colors via update_traces:
+wf_fig.update_traces(marker=dict(color=colors))
+
+wf_fig.update_layout(
+    title=f"{wf_scn}: Need vs Secured vs Expected → Funding Gap",
+    yaxis_title="$B",
+    uniformtext_minsize=10,
+    uniformtext_mode="hide",
+    margin=dict(l=10, r=10, t=60, b=10),
+    height=420
+)
+
+# Add an annotation on the final gap bar with the % (like your screenshot)
+wf_fig.add_annotation(
+    x=labels[-1], y=gap_val,
+    text=f"{gap_val:,.0f} ({gap_pct:.0f}%)",
+    showarrow=False, yshift=10, font=dict(color=COL_GAP, size=13, family="Arial Black")
+)
+
+st.plotly_chart(wf_fig, use_container_width=True)
+
+# Clear explanatory text for your viva
 st.caption(
-    f"Gap = Uses ({total_uses:.2f}B) − Sources ({total_sources:.2f}B) = **{gap_val:.2f}B**. "
-    "Uses are positive bars; sources are negative bars."
+    f"Total cash need = R&D cash now + ΔWC + Capex + Debt service. "
+    f"Secured items (Operating CF, Committed funding) and expected pipeline (undrawn facilities) are deducted. "
+    f"The remainder is the **current funding gap = {gap_val:.2f}B ({gap_pct:.0f}% of need)**."
 )
