@@ -248,9 +248,9 @@ st.caption("Mechanism: as R&D intensity rises, EBIT and OCF fall (short-term), w
 st.markdown("---")
 
 # ----------------------------
-# Custom Waterfall (replicating WHO style with per-bar colors)
+# ALM Waterfall (Your Parameters)
 # ----------------------------
-st.subheader("💧 Funding Gap Waterfall — Need vs Secured vs Expected")
+st.subheader("💧 ALM Funding Gap — Waterfall View")
 
 wf_scn = st.selectbox(
     "Select scenario for waterfall",
@@ -266,30 +266,31 @@ wf_row = run_scenario(
     tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta
 )
 
-need = float(
-    wf_row["R&D_scn"] * (rd_cash_now_pct/100.0)
-  + wf_row["WC_Delta"]
-  + wf_row["Capex"]
-  + wf_row["DebtService"]
-)
+# Step 1: Need (uses)
+rd_cash_now = float(wf_row["R&D_scn"] * (rd_cash_now_pct/100.0))
+wc_delta    = float(wf_row["WC_Delta"])
+capex       = float(wf_row["Capex"])
+debt_serv   = float(wf_row["DebtService"])
+need = rd_cash_now + wc_delta + capex + debt_serv
 
-secured_oper_cf   = max(float(wf_row["OCF"]), 0.0)
-secured_committed = max(float(wf_row["NewFunding"]), 0.0)
-expected_pipeline = max(float(wf_row["Undrawn_Revolver"]), 0.0)
+# Step 2: Funding
+oper_cf     = max(float(wf_row["OCF"]), 0.0)
+new_funding = max(float(wf_row["NewFunding"]), 0.0)
+pipeline    = max(float(wf_row["Undrawn_Revolver"]), 0.0)
 
-gap_val = max(need - (secured_oper_cf + secured_committed + expected_pipeline), 0.0)
+# Step 3: Gap
+gap_val = max(need - (oper_cf + new_funding + pipeline), 0.0)
 gap_pct = (gap_val/need*100.0) if need > 0 else 0.0
 
-# Bar definitions
 steps = [
-    {"label": "Total cash need", "value": need, "color": "#0b2b53"},
-    {"label": "Operating CF (secured)", "value": -secured_oper_cf, "color": "#1aa1ff"},
-    {"label": "Committed funding (secured)", "value": -secured_committed, "color": "#1aa1ff"},
-    {"label": "Pipeline / Undrawn (expected)", "value": -expected_pipeline, "color": "#9aa0a6"},
-    {"label": f"Funding gap ({gap_pct:.0f}%)", "value": gap_val, "color": "#d61f45"}
+    {"label": "Total Cash Need", "value": need, "color": "#0b2b53"},
+    {"label": "Operating CF (secured)", "value": -oper_cf, "color": "#1aa1ff"},
+    {"label": "New Funding (secured)", "value": -new_funding, "color": "#1aa1ff"},
+    {"label": "Undrawn Revolver (expected)", "value": -pipeline, "color": "#9aa0a6"},
+    {"label": f"Funding Gap ({gap_pct:.0f}%)", "value": gap_val, "color": "#d61f45"},
 ]
 
-# Compute cumulative positions
+# Build stacked-bar style waterfall
 x_labels, bar_values, bar_base, bar_colors = [], [], [], []
 running = 0
 for step in steps:
@@ -299,25 +300,24 @@ for step in steps:
     if step["label"].startswith("Total"):
         bar_base.append(0)
         running = step["value"]
-    elif step["label"].startswith("Funding"):
-        bar_base.append(0)  # final total shown as standalone
+    elif step["label"].startswith("Funding Gap"):
+        bar_base.append(0)
     else:
         bar_base.append(running)
         running += step["value"]
 
-# Plot with go.Bar (mimic waterfall)
 fig = go.Figure()
 fig.add_trace(go.Bar(
     x=x_labels,
     y=bar_values,
     base=bar_base,
     marker_color=bar_colors,
-    text=[f"{abs(v):,.0f}" for v in bar_values],
+    text=[f"{abs(v):,.2f}" for v in bar_values],
     textposition="outside"
 ))
 
 fig.update_layout(
-    title=f"{wf_scn}: Need vs Secured vs Expected → Funding Gap",
+    title=f"{wf_scn}: Cash Need vs Funding → Funding Gap",
     yaxis_title="$B",
     showlegend=False,
     height=420,
@@ -325,8 +325,9 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
 st.caption(
-    f"Total cash need = R&D cash now + ΔWC + Capex + Debt service. "
-    f"Secured (Operating CF, committed funding) and expected (pipeline) reduce the requirement. "
-    f"Remaining shortfall is the **Funding Gap = {gap_val:.2f}B ({gap_pct:.0f}% of need)**."
+    f"Total Cash Need = R&D cash now + ΔWC + Capex + Debt service. "
+    f"Secured (Operating CF, new funding) and Expected (undrawn revolver) are deducted. "
+    f"The remainder is the **Funding Gap = {gap_val:.2f}B ({gap_pct:.0f}% of need)**."
 )
