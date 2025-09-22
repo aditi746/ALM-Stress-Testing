@@ -1,320 +1,181 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-from datetime import datetime, date
+import plotly.graph_objects as go
 
-# =========================================================
-# Page setup
-# =========================================================
-st.set_page_config(page_title="Interactive Data Report (Auto-Generated Data)", layout="wide")
-st.title("📊 Interactive Data Report")
-st.caption(
-    "This dashboard auto-generates realistic sample data and provides filter-aware visualizations. "
-    "You’ll see a time-series line chart, a category bar chart, and a proportional pie chart — each with clear, auto-generated insights."
-)
+st.set_page_config(page_title="ALM Stress Testing Dashboard (IBR)", layout="wide")
+st.title("💊 ALM Stress Testing Dashboard")
+st.caption("R&D Intensity • Regulatory Shocks • IP Expiry → Financial Risk in Pharma")
 
-# =========================================================
-# Sidebar — Data Generator & Global Filters
-# =========================================================
-st.sidebar.header("🧪 Data Generator")
+# ----------------------------
+# Default synthetic dataset
+# ----------------------------
+default_df = pd.DataFrame({
+    "Year": list(range(2015, 2025)),
+    "Revenue": [10.5,12.1,15.1,18.2,18.7,20.9,24.9,26.3,27.3,30.5],
+    "COGS":    [4.2,5.2,5.6,7.3,7.6,7.4,10.2,9.7,9.7,13.6],
+    "Opex_exR&D": [2.6,2.9,3.2,3.7,4.4,4.6,5.1,5.9,5.5,7.5],
+    "R&D":     [2.0,2.3,3.0,3.9,3.9,4.2,5.6,5.0,5.5,6.3],
+    "Capex":   [0.5,0.7,0.7,1.0,1.1,0.9,1.7,1.7,1.9,2.0],
+    "Cash_Begin": [3.4,4.7,1.4,1.8,1.2,2.3,2.6,2.1,4.3,2.4],
+    "Debt_Begin": [10.0,11.8,9.0,13.6,8.5,14.9,13.4,9.4,8.0,13.7],
+    "InterestRate": [0.044,0.045,0.045,0.032,0.037,0.032,0.047,0.043,0.037,0.031],
+    "PrincipalDue_12m": [0.8,1.0,1.1,1.6,1.2,1.5,0.8,1.1,1.0,1.5],
+    "DSO": [73,66,68,74,74,69,72,78,66,76],
+    "DPO": [69,53,54,56,62,64,60,53,62,56],
+    "DIO": [98,81,89,92,85,91,91,99,90,86],
+    "Undrawn_Revolver": [2.8,1.5,2.3,1.0,1.7,1.6,1.3,2.1,2.0,2.4],
+    "Depreciation": [0.4,0.5,0.6,0.7,0.8,0.8,1.0,1.0,1.1,1.2]
+})
 
-seed = st.sidebar.number_input("Random Seed", min_value=0, max_value=999_999, value=1234, step=1)
-np.random.seed(seed)
+st.sidebar.header("📥 Data")
+uploaded = st.sidebar.file_uploader("Upload CSV (optional, same columns)", type=["csv"])
+df = pd.read_csv(uploaded) if uploaded else default_df.copy()
+df = df.sort_values("Year").reset_index(drop=True)
 
-freq = st.sidebar.selectbox("Frequency", ["Daily", "Weekly", "Monthly"], index=2)
-periods = st.sidebar.slider("Number of Periods", min_value=12, max_value=730,
-                            value=36 if freq == "Monthly" else (104 if freq == "Weekly" else 365), step=1)
+# ----------------------------
+# Core controls
+# ----------------------------
+st.sidebar.header("🎛️ Core Controls")
+rd_bps = st.sidebar.slider("Δ R&D (bps of Revenue)", -500, 1500, 300, 25)
+rd_cash_now_pct = st.sidebar.slider("R&D Cash Now (%)", 0, 100, 80, 5)
+price_cap = st.sidebar.slider("Regulatory Price Cap (%)", 0, 50, 0, 5)
+comp_cost_pct = st.sidebar.slider("Compliance Cost (% of Revenue)", 0, 10, 0, 1)
+preset = st.sidebar.selectbox("Scenario Preset", ["Base", "R&D Surge", "Reg Shock", "Patent Cliff", "Black Swan"])
+new_debt = st.sidebar.number_input("New Funding — Debt ($B)", 0.0, 100.0, 0.0, 0.1)
+new_equity = st.sidebar.number_input("New Funding — Equity ($B)", 0.0, 100.0, 0.0, 0.1)
+tax_rate = st.sidebar.slider("Tax Rate (%)", 0, 40, 18, 1)
 
-start_dt = st.sidebar.date_input("Start Date", date(2023, 1, 1))
-n_cats = st.sidebar.slider("Number of Categories", 3, 10, 5, 1)
+with st.sidebar.expander("Advanced Working Capital"):
+    dso_delta = st.slider("Δ DSO (days)", -15, 30, 0, 1)
+    dpo_delta = st.slider("Δ DPO (days)", -15, 30, 0, 1)
+    dio_delta = st.slider("Δ DIO (days)", -30, 30, 0, 1)
 
-# Generate simple category names
-cat_names = [f"Category {chr(ord('A')+i)}" for i in range(n_cats)]
+# ----------------------------
+# Scenario engine
+# ----------------------------
+def run_scenario(df, rd_bps=0, rd_cash_now_pct=80, price_cap=0, comp_cost_pct=0,
+                 preset="Base", new_debt=0, new_equity=0, tax_rate=18,
+                 dso_delta=0, dpo_delta=0, dio_delta=0):
+    scn = df.copy()
+    scn["Revenue_scn"] = scn["Revenue"] * (1 - price_cap/100)
 
-# =========================================================
-# Synthetic data generation
-# =========================================================
-def make_date_index(start: date, periods: int, freq: str) -> pd.DatetimeIndex:
-    if freq == "Daily":
-        rule = "D"
-    elif freq == "Weekly":
-        rule = "W"
-    else:
-        rule = "MS"  # month start
-    return pd.date_range(pd.to_datetime(start), periods=periods, freq=rule)
+    if preset == "Patent Cliff":
+        scn["Revenue_scn"] *= 0.8
+        scn["COGS"] *= 1.10
+        scn["R&D"] *= 1.15
+    elif preset == "R&D Surge":
+        rd_bps = 800
+    elif preset == "Reg Shock":
+        price_cap = 15; comp_cost_pct = 3
+    elif preset == "Black Swan":
+        rd_bps = 600; rd_cash_now_pct = 95
+        price_cap = 10; comp_cost_pct = 4
 
-def generate_synthetic_dataframe(start: date, periods: int, freq: str, categories: list[str], seed: int = 0) -> pd.DataFrame:
-    rng = np.random.default_rng(seed)
-    idx = make_date_index(start, periods, freq)
+    scn["R&D_scn"] = scn["R&D"] + scn["Revenue"] * (rd_bps/10000)
+    scn["Opex_exR&D"] += scn["Revenue"] * (comp_cost_pct/100)
 
-    # Base global trend & seasonality for "Sales"
-    t = np.arange(len(idx))
-    trend = 1 + 0.002 * t  # gentle upward trend
-    if freq == "Monthly":
-        # seasonality by months
-        season = 1 + 0.15*np.sin(2*np.pi*(t/12.0)) + 0.05*np.cos(2*np.pi*(t/6.0))
-    elif freq == "Weekly":
-        season = 1 + 0.10*np.sin(2*np.pi*(t/52.0))
-    else:
-        season = 1 + 0.05*np.sin(2*np.pi*(t/365.0))
+    # Working capital
+    dso = scn["DSO"] + dso_delta
+    dpo = scn["DPO"] + dpo_delta
+    dio = scn["DIO"] + dio_delta
+    ar = scn["Revenue_scn"] * (dso/365)
+    inv = scn["COGS"] * (dio/365)
+    ap = scn["COGS"] * (dpo/365)
+    wc = ar + inv - ap
+    scn["WC_Delta"] = wc - wc.shift(1).fillna(wc.iloc[0])
 
-    total_baseline = 1000.0  # baseline level for Sales
+    # EBIT & OCF
+    scn["EBIT"] = scn["Revenue_scn"] - scn["COGS"] - scn["Opex_exR&D"] - scn["R&D_scn"]
+    scn["OCF"] = scn["EBIT"] * (1 - tax_rate/100) + scn["Depreciation"] - scn["WC_Delta"]
 
-    # Category shares via Dirichlet — vary over time slightly
-    # Start with static base shares…
-    base_alpha = np.ones(len(categories))
-    base_shares = rng.dirichlet(base_alpha)
-    base_shares = base_shares / base_shares.sum()
+    # Funding
+    scn["RD_CashNow"] = scn["R&D_scn"] * (rd_cash_now_pct/100.0)
+    scn["NewFunding"] = new_debt + new_equity
+    scn["FundingGap"] = scn["RD_CashNow"] + scn["WC_Delta"] + scn["Capex"] + scn["PrincipalDue_12m"] - (scn["OCF"] + scn["NewFunding"])
+    scn["Cash_End"] = scn["Cash_Begin"] - scn["FundingGap"]
 
-    rows = []
-    for i, ts in enumerate(idx):
-        # small jitter to shares over time
-        jitter = rng.normal(0, 0.02, size=len(categories))
-        shares = np.clip(base_shares + jitter, 0.01, None)
-        shares = shares / shares.sum()
+    # Ratios
+    scn["RD_Intensity"] = scn["R&D_scn"]/scn["Revenue_scn"]
+    scn["ALM_Stress"] = scn["FundingGap"].abs() * (1 + scn["RD_Intensity"])
+    scn["ICR"] = (scn["EBIT"].clip(lower=1e-6) / (scn["Debt_Begin"]*scn["InterestRate"]+1e-6))
+    scn["DSCR"] = (scn["OCF"] / (scn["PrincipalDue_12m"] + scn["Debt_Begin"]*scn["InterestRate"]+1e-6))
+    scn["Liquidity12m"] = (scn["Cash_Begin"] + scn["Undrawn_Revolver"]) / (scn["Capex"] + scn["RD_CashNow"] + scn["PrincipalDue_12m"])
+    scn["Runway_months"] = np.where(scn["FundingGap"]>0, scn["Cash_Begin"]/(scn["FundingGap"]/12), np.inf)
 
-        # global shocks (random events)
-        shock = rng.normal(loc=1.0, scale=0.06)  # ~6% std
-        total_sales = total_baseline * trend[i] * season[i] * shock
+    return scn.iloc[-1]  # latest year snapshot
 
-        for c_idx, cat in enumerate(categories):
-            # per-category multiplier and noise
-            cat_mult = 0.8 + 0.4*rng.random()  # 0.8–1.2
-            sales = total_sales * shares[c_idx] * cat_mult
-            # Costs ~ 60–80% of sales depending on category efficiency
-            gross_margin_pct = 0.2 + 0.25*rng.random()  # 20–45%
-            cost = sales * (1 - gross_margin_pct)
-            # Units scale with sales but with randomness
-            price_per_unit = 10 + 20*rng.random()
-            units = max(sales / price_per_unit + rng.normal(0, 5), 0)
+# ----------------------------
+# KPI cards
+# ----------------------------
+sel = run_scenario(df, rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+                   price_cap=price_cap, comp_cost_pct=comp_cost_pct,
+                   preset=preset, new_debt=new_debt, new_equity=new_equity,
+                   tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta)
 
-            rows.append({
-                "Date": ts,
-                "Category": cat,
-                "Sales": sales,
-                "Cost": cost,
-                "Units": units
-            })
+st.subheader(f"📊 Key Metrics — {preset} Scenario")
+k = st.columns(5)
+k[0].metric("Funding Gap ($B)", f"{sel['FundingGap']:.2f}")
+k[1].metric("EBIT ($B)", f"{sel['EBIT']:.2f}")
+k[2].metric("OCF ($B)", f"{sel['OCF']:.2f}")
+k[3].metric("DSCR", f"{sel['DSCR']:.2f}")
+k[4].metric("ICR", f"{sel['ICR']:.2f}")
 
-    df = pd.DataFrame(rows)
-    df["Profit"] = df["Sales"] - df["Cost"]
-    # Guard against divide-by-zero; Margin% useful for extra insights
-    df["Margin_%"] = np.where(df["Sales"] > 0, df["Profit"] / df["Sales"] * 100, 0.0)
-    return df
+st.markdown("---")
 
-df_raw = generate_synthetic_dataframe(start_dt, periods, freq, cat_names, seed=seed)
+# ----------------------------
+# Funding Gap across scenarios
+# ----------------------------
+scenarios = {
+    "Base": run_scenario(df, preset="Base"),
+    "R&D Surge": run_scenario(df, preset="R&D Surge"),
+    "Reg Shock": run_scenario(df, preset="Reg Shock"),
+    "Patent Cliff": run_scenario(df, preset="Patent Cliff"),
+}
+scn_df = pd.DataFrame(scenarios).T
 
-# =========================================================
-# Global Filters (apply to generated data)
-# =========================================================
-st.sidebar.header("🔎 Filters")
+st.subheader("🏛 Objective 2: Funding Gap Across Scenarios")
+st.bar_chart(scn_df[["FundingGap"]])
+st.caption("Regulatory shocks and R&D surges widen the funding gap compared to base case.")
 
-# Date range filter
-min_d, max_d = df_raw["Date"].min(), df_raw["Date"].max()
-date_range = st.sidebar.date_input(
-    "Date Range",
-    [min_d.date(), max_d.date()],
-    min_value=min_d.date(), max_value=max_d.date()
-)
-start_sel, end_sel = date_range if isinstance(date_range, (list, tuple)) else (date_range, date_range)
+st.markdown("---")
 
-df = df_raw[(df_raw["Date"].dt.date >= start_sel) & (df_raw["Date"].dt.date <= end_sel)].copy()
+# ----------------------------
+# Sensitivity: Funding Gap vs R&D intensity
+# ----------------------------
+grid = list(range(0, 1201, 200))
+sens = pd.DataFrame([run_scenario(df, rd_bps=x).to_dict() for x in grid])
+sens["R&D_bps"] = grid
 
-# Category filter
-all_categories = df["Category"].unique().tolist()
-sel_categories = st.sidebar.multiselect("Categories", options=all_categories, default=all_categories)
-if sel_categories:
-    df = df[df["Category"].isin(sel_categories)]
+st.subheader("📈 Objective 1: Sensitivity to R&D Intensity")
+st.line_chart(sens.set_index("R&D_bps")[["FundingGap"]])
+st.caption("Higher R&D intensity reduces EBIT & OCF, widening funding gaps.")
 
-# Metric selection
-numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-# Prioritize business metrics order
-metric_choices = [m for m in ["Sales", "Profit", "Cost", "Units", "Margin_%"] if m in numeric_cols] or numeric_cols
-metric = st.sidebar.selectbox("Metric", metric_choices)
+st.markdown("---")
 
-# Time aggregation for the line chart
-time_agg = st.sidebar.selectbox("Time Aggregation", ["Auto", "Daily", "Weekly", "Monthly", "Quarterly", "Yearly"], index=2)
+# ----------------------------
+# Waterfall: Patent Cliff
+# ----------------------------
+st.subheader("💧 Objective 3: Patent Cliff — Sources vs Uses of Cash")
+pc = scenarios["Patent Cliff"]
 
-# =========================================================
-# Helper functions for insights
-# =========================================================
-def trend_text(series: pd.Series, label: str) -> str:
-    s = series.dropna()
-    if len(s) < 2:
-        return f"Not enough data to evaluate the {label} trend."
-    first, last = s.iloc[0], s.iloc[-1]
-    change = last - first
-    pct = (change / first * 100) if first != 0 else np.nan
-    direction = "upward 📈" if change > 0 else ("downward 📉" if change < 0 else "flat ➖")
-    base = f"{label} shows an **{direction}** movement from {first:,.2f} to {last:,.2f}"
-    return base + (f" (**{pct:+.1f}%**)." if np.isfinite(pct) else ".")
+uses = {
+    "R&D cash now": pc["RD_CashNow"],
+    "Δ Working capital": pc["WC_Delta"],
+    "Capex": pc["Capex"],
+    "Debt service": pc["PrincipalDue_12m"],
+}
+sources = {
+    "Operating CF": -pc["OCF"],
+    "New funding": -(pc["NewFunding"]),
+}
+items = list(uses.items()) + list(sources.items())
+labels = [k for k,_ in items] + ["Gap"]
+vals = [v for _,v in items]
+gap = sum(vals); vals.append(gap)
 
-def share_table(df: pd.DataFrame, by: str, val: str) -> pd.DataFrame:
-    grp = df.groupby(by, dropna=False)[val].sum().reset_index().rename(columns={val: "Value"})
-    total = grp["Value"].sum()
-    grp["Share_%"] = np.where(total != 0, grp["Value"] / total * 100, 0.0)
-    grp = grp.sort_values("Value", ascending=False)
-    return grp
+wf = go.Figure(go.Waterfall(x=labels, measure=["relative"]*len(items)+["total"], y=vals))
+wf.update_layout(title="Patent Cliff Cash Flow Breakdown", height=350)
+st.plotly_chart(wf, use_container_width=True)
 
-def resample_frame(frame: pd.DataFrame, rule: str, metric: str, has_cat=True) -> pd.DataFrame:
-    """Aggregate time series by chosen frequency."""
-    if rule == "Auto":
-        span = (frame["Date"].max() - frame["Date"].min()).days
-        rule = "M" if span > 200 else "W"
-    map_rule = {"Daily":"D","Weekly":"W","Monthly":"M","Quarterly":"Q","Yearly":"Y"}
-    code = map_rule.get(rule, "W")
-    if has_cat:
-        out = (frame.set_index("Date")
-                     .groupby("Category")[metric]
-                     .resample(code).sum()
-                     .reset_index())
-    else:
-        out = (frame.set_index("Date")[metric]
-                     .resample(code).sum()
-                     .reset_index())
-    return out
-
-# =========================================================
-# SECTION 1 — Time Trend (Line)
-# =========================================================
-st.markdown("## 1) Trend Over Time")
-
-if df.empty:
-    st.warning("No data after filters. Adjust your date range or categories.")
-else:
-    has_cat = "Category" in df.columns
-    df_ts = df[["Date", metric] + (["Category"] if has_cat else [])].dropna(subset=["Date"])
-    df_ts = df_ts.sort_values("Date")
-
-    # Resample
-    df_res = resample_frame(df_ts, time_agg, metric, has_cat=has_cat)
-
-    # Draw chart
-    if has_cat:
-        line_fig = px.line(df_res, x="Date", y=metric, color="Category", markers=True,
-                           title=f"{metric} over Time ({time_agg})")
-    else:
-        line_fig = px.line(df_res, x="Date", y=metric, markers=True,
-                           title=f"{metric} over Time ({time_agg})")
-
-    st.plotly_chart(line_fig, use_container_width=True)
-
-    # Interpretation (total trend across categories)
-    try:
-        total_trend = df_res if not has_cat else df_res.groupby("Date")[metric].sum().reset_index()
-        st.caption("**Insight:** " + trend_text(total_trend[metric], metric))
-    except Exception:
-        st.caption("**Insight:** Trend interpretation unavailable for this selection.")
-
-st.divider()
-
-# =========================================================
-# SECTION 2 — Category Comparison (Bar)
-# =========================================================
-st.markdown("## 2) Category Comparison")
-
-if df.empty:
-    st.info("No data to display. Adjust filters.")
-else:
-    comp = share_table(df, by="Category", val=metric)
-
-    left, right = st.columns([0.6, 0.4])
-    with right:
-        top_n = st.slider("Top-N categories", 3, min(10, len(comp)), min(5, len(comp)))
-    comp_top = comp.head(top_n)
-
-    bar_fig = px.bar(comp_top, x="Category", y="Value", color="Category",
-                     text_auto=True, title=f"{metric} by Category (Top {top_n})")
-    st.plotly_chart(bar_fig, use_container_width=True)
-
-    # Interpretation: leader + relative gap
-    try:
-        leader = comp.iloc[0]
-        leader_cat = str(leader["Category"])
-        leader_share = leader["Share_%"]
-        runner_up_share = comp.iloc[1]["Share_%"] if len(comp) > 1 else 0.0
-        diff = leader_share - runner_up_share
-        st.caption(
-            f"**Insight:** '{leader_cat}' leads with **{leader_share:.1f}%** share of {metric}. "
-            f"Lead over next category: **{diff:.1f} p.p.**"
-        )
-    except Exception:
-        st.caption("**Insight:** Could not determine a clear category leader.")
-
-st.divider()
-
-# =========================================================
-# SECTION 3 — Proportional Breakdown (Pie)
-# =========================================================
-st.markdown("## 3) Proportional Breakdown")
-
-if df.empty:
-    st.info("No data to display. Adjust filters.")
-else:
-    comp_full = share_table(df, by="Category", val=metric)
-
-    with st.expander("Pie options"):
-        min_share = st.slider("Group slices below (%) into 'Other'", 0.0, 10.0, 0.0, 0.5)
-
-    if min_share > 0:
-        major = comp_full[comp_full["Share_%"] >= min_share].copy()
-        minor = comp_full[comp_full["Share_%"] < min_share].copy()
-        if not minor.empty:
-            other = pd.DataFrame({"Category": [f"Other (<{min_share:.1f}%)"],
-                                  "Value": [minor["Value"].sum()],
-                                  "Share_%": [minor["Share_%"].sum()]})
-            comp_plot = pd.concat([major, other], ignore_index=True)
-        else:
-            comp_plot = major
-    else:
-        comp_plot = comp_full
-
-    pie_fig = px.pie(comp_plot, names="Category", values="Value", hole=0.35,
-                     title=f"{metric} — Proportional Breakdown")
-    st.plotly_chart(pie_fig, use_container_width=True)
-
-    # Interpretation
-    try:
-        lead = comp_full.iloc[0]["Category"]
-        lead_pct = comp_full.iloc[0]["Share_%"]
-        tail_pct = comp_full.iloc[1:]["Share_%"].sum()
-        st.caption(
-            f"**Insight:** '{lead}' holds the largest share at **{lead_pct:.1f}%** of total {metric}. "
-            f"All other categories combined account for **{tail_pct:.1f}%**."
-        )
-    except Exception:
-        st.caption("**Insight:** Proportion interpretation unavailable.")
-
-st.divider()
-
-# =========================================================
-# Data Summary & Download
-# =========================================================
-st.markdown("## 🔎 Data Summary & Download")
-
-colA, colB, colC, colD = st.columns(4)
-with colA:
-    st.metric("Rows (filtered)", value=len(df))
-with colB:
-    st.metric("Categories (filtered)", value=df["Category"].nunique())
-with colC:
-    st.metric("Start → End",
-              value=f"{df['Date'].min().date() if not df.empty else '-'} → {df['Date'].max().date() if not df.empty else '-'}")
-with colD:
-    st.metric("Metric", value=metric)
-
-with st.expander("Preview generated & filtered dataset"):
-    st.dataframe(df.head(50), use_container_width=True)
-
-st.download_button(
-    "⬇️ Download current filtered data as CSV",
-    df.to_csv(index=False).encode("utf-8"),
-    file_name=f"generated_filtered_{metric}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-    mime="text/csv"
-)
-
-st.info(
-    "Tips: Use **Date Range**, **Categories**, and **Metric** to control all visuals. "
-    "Adjust **Frequency / Periods / Seed** in the sidebar to regenerate a fresh synthetic dataset."
-)
+st.caption("Under IP expiry, revenues drop, margins compress, and R&D rises — creating a funding gap not covered by OCF or new funding.")
