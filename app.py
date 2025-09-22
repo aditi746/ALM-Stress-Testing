@@ -53,7 +53,7 @@ with st.sidebar.expander("Advanced Working Capital"):
     dio_delta = st.slider("Δ DIO (days)", -30, 30, 0, 1)
 
 # ----------------------------
-# Scenario engine (one snapshot, latest year)
+# Scenario engine (returns latest year snapshot)
 # ----------------------------
 def run_scenario(df, rd_bps=0, rd_cash_now_pct=80, price_cap=0, comp_cost_pct=0,
                  preset="Base", new_debt=0, new_equity=0, tax_rate=18,
@@ -107,57 +107,5 @@ def run_scenario(df, rd_bps=0, rd_cash_now_pct=80, price_cap=0, comp_cost_pct=0,
     return scn.iloc[-1]  # return only latest year snapshot
 
 # ----------------------------
-# Scenario comparison
-# ----------------------------
-scenarios = {
-    "Base": run_scenario(df, preset="Base"),
-    "R&D Surge": run_scenario(df, preset="R&D Surge"),
-    "Reg Shock": run_scenario(df, preset="Reg Shock"),
-    "Patent Cliff": run_scenario(df, preset="Patent Cliff"),
-    "Black Swan": run_scenario(df, preset="Black Swan"),
-}
-scn_df = pd.DataFrame(scenarios).T[["Revenue_scn","R&D_scn","EBIT","OCF","FundingGap","ALM_Stress","DSCR","ICR","Liquidity12m","Runway_months"]]
-
-st.subheader("📊 Scenario Comparison (latest year)")
-st.dataframe(scn_df.round(2))
-
-st.bar_chart(scn_df[["FundingGap","ALM_Stress"]])
-
-# ----------------------------
-# Sensitivity (FundingGap vs R&D intensity)
-# ----------------------------
-grid = list(range(0, 1201, 200))
-sens = pd.DataFrame([run_scenario(df, rd_bps=x).to_dict() for x in grid])
-sens["R&D_bps"] = grid
-
-st.subheader("📈 Sensitivity: Funding Gap vs R&D Intensity")
-st.line_chart(sens.set_index("R&D_bps")["FundingGap"])
-
-# ----------------------------
-# Waterfall for selected preset
-# ----------------------------
-st.subheader("💧 Funding Gap Waterfall — Selected Scenario")
-sel = run_scenario(df, rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
-                   price_cap=price_cap, comp_cost_pct=compliance_cost_pct,
-                   preset=preset, new_debt=new_debt, new_equity=new_equity,
-                   tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta)
-
-uses = {
-    "R&D cash now": sel["RD_CashNow"],
-    "Δ Working capital": sel["WC_Delta"],
-    "Capex": sel["Capex"],
-    "Debt service": sel["PrincipalDue_12m"],
-}
-sources = {
-    "Operating CF": -sel["OCF"],
-    "New funding": -(sel["NewFunding"]),
-}
-water_items = list(uses.items()) + list(sources.items())
-labels = [k for k,_ in water_items] + ["Gap"]
-vals = [v for _,v in water_items]
-gap = sum(vals); vals.append(gap)
-
-wf = go.Figure(go.Waterfall(x=labels, measure=["relative"]*len(water_items)+["total"], y=vals))
-st.plotly_chart(wf, use_container_width=True)
-
-st.download_button("⬇️ Download Scenario CSV", scn_df.to_csv().encode("utf-8"), "scenarios.csv","text/csv")
+# KPI cards for selected scenario
+# -------------------------
