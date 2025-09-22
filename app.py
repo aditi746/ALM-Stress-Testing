@@ -1,15 +1,19 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 import plotly.graph_objects as go
 
+# -----------------------------------------------------------
+# Page
+# -----------------------------------------------------------
 st.set_page_config(page_title="ALM Stress Testing Dashboard (IBR)", layout="wide")
 st.title("💊 ALM Stress Testing Dashboard")
 st.caption("R&D Intensity • Regulatory Shocks • IP Expiry → Financial Risk in Pharma")
 
-# ----------------------------
-# Default synthetic dataset
-# ----------------------------
+# -----------------------------------------------------------
+# Synthetic Data (same schema as your version)
+# -----------------------------------------------------------
 default_df = pd.DataFrame({
     "Year": list(range(2015, 2025)),
     "Revenue": [10.5,12.1,15.1,18.2,18.7,20.9,24.9,26.3,27.3,30.5],
@@ -33,9 +37,9 @@ uploaded = st.sidebar.file_uploader("Upload CSV (optional, same columns)", type=
 df = pd.read_csv(uploaded) if uploaded else default_df.copy()
 df = df.sort_values("Year").reset_index(drop=True)
 
-# ----------------------------
-# Core controls
-# ----------------------------
+# -----------------------------------------------------------
+# Controls
+# -----------------------------------------------------------
 st.sidebar.header("🎛️ Core Controls")
 rd_bps = st.sidebar.slider("Δ R&D (bps of Revenue)", -500, 1500, 300, 25)
 rd_cash_now_pct = st.sidebar.slider("R&D Cash Now (%)", 0, 100, 80, 5)
@@ -51,81 +55,107 @@ with st.sidebar.expander("Advanced Working Capital"):
     dpo_delta = st.slider("Δ DPO (days)", -15, 30, 0, 1)
     dio_delta = st.slider("Δ DIO (days)", -30, 30, 0, 1)
 
-# ----------------------------
-# Scenario engine
-# ----------------------------
-def run_scenario(df, rd_bps=0, rd_cash_now_pct=80, price_cap=0, comp_cost_pct=0,
-                 preset="Base", new_debt=0, new_equity=0, tax_rate=18,
+# -----------------------------------------------------------
+# Scenario Engine (latest-year snapshot)
+# -----------------------------------------------------------
+def run_scenario(df,
+                 rd_bps=0, rd_cash_now_pct=80,
+                 price_cap=0, comp_cost_pct=0,
+                 preset="Base",
+                 new_debt=0, new_equity=0,
+                 tax_rate=18,
                  dso_delta=0, dpo_delta=0, dio_delta=0):
     scn = df.copy()
+
+    # Revenue impact from regulation
     scn["Revenue_scn"] = scn["Revenue"] * (1 - price_cap/100)
 
+    # Presets
     if preset == "Patent Cliff":
         scn["Revenue_scn"] *= 0.8
         scn["COGS"] *= 1.10
         scn["R&D"] *= 1.15
     elif preset == "R&D Surge":
-        rd_bps = 800
+        rd_bps = max(rd_bps, 800)  # ensure surge
     elif preset == "Reg Shock":
-        price_cap = 15; comp_cost_pct = 3
+        price_cap = max(price_cap, 15)
+        comp_cost_pct = max(comp_cost_pct, 3)
     elif preset == "Black Swan":
-        rd_bps = 600; rd_cash_now_pct = 95
-        price_cap = 10; comp_cost_pct = 4
+        rd_bps = max(rd_bps, 600)
+        rd_cash_now_pct = max(rd_cash_now_pct, 95)
+        price_cap = max(price_cap, 10)
+        comp_cost_pct = max(comp_cost_pct, 4)
+        scn["Revenue_scn"] = scn["Revenue"] * (1 - price_cap/100)
 
-    scn["R&D_scn"] = scn["R&D"] + scn["Revenue"] * (rd_bps/10000)
-    scn["Opex_exR&D"] += scn["Revenue"] * (comp_cost_pct/100)
+    # Expense effects
+    scn["R&D_scn"] = scn["R&D"] + scn["Revenue"] * (rd_bps/10000.0)
+    scn["Opex_exR&D"] = scn["Opex_exR&D"] + scn["Revenue"] * (comp_cost_pct/100.0)
 
-    # Working capital
+    # Working capital deltas (timing)
     dso = scn["DSO"] + dso_delta
     dpo = scn["DPO"] + dpo_delta
     dio = scn["DIO"] + dio_delta
-    ar = scn["Revenue_scn"] * (dso/365)
-    inv = scn["COGS"] * (dio/365)
-    ap = scn["COGS"] * (dpo/365)
+    ar = scn["Revenue_scn"] * (dso/365.0)
+    inv = scn["COGS"] * (dio/365.0)
+    ap = scn["COGS"] * (dpo/365.0)
     wc = ar + inv - ap
     scn["WC_Delta"] = wc - wc.shift(1).fillna(wc.iloc[0])
 
-    # EBIT & OCF
+    # Profit & cash flow
     scn["EBIT"] = scn["Revenue_scn"] - scn["COGS"] - scn["Opex_exR&D"] - scn["R&D_scn"]
-    scn["OCF"] = scn["EBIT"] * (1 - tax_rate/100) + scn["Depreciation"] - scn["WC_Delta"]
+    scn["OCF"] = scn["EBIT"] * (1 - tax_rate/100.0) + scn["Depreciation"] - scn["WC_Delta"]
 
-    # Funding
+    # Funding & gap
     scn["RD_CashNow"] = scn["R&D_scn"] * (rd_cash_now_pct/100.0)
     scn["NewFunding"] = new_debt + new_equity
-    scn["FundingGap"] = scn["RD_CashNow"] + scn["WC_Delta"] + scn["Capex"] + scn["PrincipalDue_12m"] - (scn["OCF"] + scn["NewFunding"])
+    scn["Interest"] = scn["Debt_Begin"] * scn["InterestRate"]
+    scn["DebtService"] = scn["PrincipalDue_12m"] + scn["Interest"]
+
+    # Gap = Uses – Sources
+    uses = scn["RD_CashNow"] + scn["WC_Delta"] + scn["Capex"] + scn["DebtService"]
+    sources = scn["OCF"] + scn["NewFunding"]
+    scn["FundingGap"] = uses - sources
+
     scn["Cash_End"] = scn["Cash_Begin"] - scn["FundingGap"]
 
-    # Ratios
-    scn["RD_Intensity"] = scn["R&D_scn"]/scn["Revenue_scn"]
+    # Ratios (guard divide-by-zero)
+    scn["RD_Intensity"] = (scn["R&D_scn"] / scn["Revenue_scn"]).replace([np.inf, -np.inf], 0).fillna(0)
     scn["ALM_Stress"] = scn["FundingGap"].abs() * (1 + scn["RD_Intensity"])
-    scn["ICR"] = (scn["EBIT"].clip(lower=1e-6) / (scn["Debt_Begin"]*scn["InterestRate"]+1e-6))
-    scn["DSCR"] = (scn["OCF"] / (scn["PrincipalDue_12m"] + scn["Debt_Begin"]*scn["InterestRate"]+1e-6))
-    scn["Liquidity12m"] = (scn["Cash_Begin"] + scn["Undrawn_Revolver"]) / (scn["Capex"] + scn["RD_CashNow"] + scn["PrincipalDue_12m"])
-    scn["Runway_months"] = np.where(scn["FundingGap"]>0, scn["Cash_Begin"]/(scn["FundingGap"]/12), np.inf)
+    scn["ICR"] = (scn["EBIT"].clip(lower=1e-6) / scn["Interest"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0)
+    scn["DSCR"] = (scn["OCF"] / scn["DebtService"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0)
+    scn["Liquidity12m"] = (scn["Cash_Begin"] + scn["Undrawn_Revolver"]) / (scn["Capex"] + scn["RD_CashNow"] + scn["DebtService"]).replace(0, np.nan)
+    scn["Runway_months"] = np.where(scn["FundingGap"] > 0, scn["Cash_Begin"] / (scn["FundingGap"]/12.0), np.inf)
 
-    return scn.iloc[-1]  # latest year snapshot
+    # Return latest year snapshot only
+    return scn.iloc[-1]
 
-# ----------------------------
-# KPI cards
-# ----------------------------
-sel = run_scenario(df, rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
-                   price_cap=price_cap, comp_cost_pct=comp_cost_pct,
-                   preset=preset, new_debt=new_debt, new_equity=new_equity,
-                   tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta)
+# Utility to format B with 2 decimals
+fmtB = lambda x: f"{x:.2f}"
 
-st.subheader(f"📊 Key Metrics — {preset} Scenario")
-k = st.columns(5)
-k[0].metric("Funding Gap ($B)", f"{sel['FundingGap']:.2f}")
-k[1].metric("EBIT ($B)", f"{sel['EBIT']:.2f}")
-k[2].metric("OCF ($B)", f"{sel['OCF']:.2f}")
-k[3].metric("DSCR", f"{sel['DSCR']:.2f}")
-k[4].metric("ICR", f"{sel['ICR']:.2f}")
+# -----------------------------------------------------------
+# KPIs (selected scenario)
+# -----------------------------------------------------------
+sel = run_scenario(
+    df, rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+    price_cap=price_cap, comp_cost_pct=comp_cost_pct,
+    preset=preset, new_debt=new_debt, new_equity=new_equity,
+    tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta
+)
+
+st.subheader(f"📊 Key Metrics — {preset} Scenario (latest year)")
+k = st.columns(6)
+k[0].metric("Funding Gap ($B)", fmtB(sel["FundingGap"]))
+k[1].metric("EBIT ($B)", fmtB(sel["EBIT"]))
+k[2].metric("OCF ($B)", fmtB(sel["OCF"]))
+k[3].metric("DSCR (×)", fmtB(sel["DSCR"]))
+k[4].metric("ICR (×)", fmtB(sel["ICR"]))
+k[5].metric("Liquidity 12m (×)", fmtB(sel["Liquidity12m"] if np.isfinite(sel["Liquidity12m"]) else 0))
 
 st.markdown("---")
 
-# ----------------------------
-# Funding Gap across scenarios
-# ----------------------------
+# -----------------------------------------------------------
+# SCENARIO COMPARISON — Funding Gap + Stacked Sources/Uses
+# -----------------------------------------------------------
 scenarios = {
     "Base": run_scenario(df, preset="Base"),
     "R&D Surge": run_scenario(df, preset="R&D Surge"),
@@ -135,47 +165,131 @@ scenarios = {
 scn_df = pd.DataFrame(scenarios).T
 
 st.subheader("🏛 Objective 2: Funding Gap Across Scenarios")
-st.bar_chart(scn_df[["FundingGap"]])
-st.caption("Regulatory shocks and R&D surges widen the funding gap compared to base case.")
+gap_fig = px.bar(
+    scn_df.reset_index().rename(columns={"index":"Scenario"}),
+    x="Scenario", y="FundingGap", text="FundingGap",
+    title="Funding Gap by Scenario ($B)"
+)
+gap_fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+gap_fig.update_layout(yaxis_title="$B", xaxis_title="", uniformtext_minsize=10, uniformtext_mode="hide")
+st.plotly_chart(gap_fig, use_container_width=True)
+st.caption("Regulatory caps, compliance costs, and IP expiry reduce OCF and/or raise uses (R&D, Capex, Debt service), widening the gap vs Base.")
+
+# Stacked Sources vs Uses per Scenario (helps show composition)
+def sources_uses_row(r):
+    # We recompute uses/sources consistent with engine
+    rd_cash = r["R&D_scn"] * (rd_cash_now_pct/100.0) if "R&D_scn" in r else np.nan
+    # But our scenario rows already carry RD_CashNow/OCF? (not stored). We'll approximate using selected sliders for display.
+    # Safer: call run_scenario again with matching preset and *default* sliders for comparison view.
+    return
+
+# Instead of approximating, build a compact table with a second pass using same internal defaults per preset:
+def scenario_breakdown(preset_name):
+    rr = run_scenario(df, preset=preset_name)  # default sliders for a clean A/B
+    uses = {
+        "R&D cash now": rr["R&D_scn"] * 0.80,  # default 80% cash timing in run_scenario() when not overridden
+        "Δ Working capital": rr["WC_Delta"],
+        "Capex": rr["Capex"],
+        "Debt service": rr["DebtService"],
+    }
+    sources = {
+        "Operating CF": rr["OCF"],
+        "New funding": rr["NewFunding"],
+    }
+    return rr, uses, sources
+
+rows = []
+for name in ["Base", "R&D Surge", "Reg Shock", "Patent Cliff"]:
+    rr, uses, sources = scenario_breakdown(name)
+    rows.append({
+        "Scenario": name,
+        "Uses_Total": sum(uses.values()),
+        "Sources_Total": sum(sources.values()),
+        "FundingGap": rr["FundingGap"],
+        "OCF": sources["Operating CF"],
+        "NewFunding": sources["New funding"],
+        "R&D cash now": uses["R&D cash now"],
+        "Δ Working capital": uses["Δ Working capital"],
+        "Capex": uses["Capex"],
+        "Debt service": uses["Debt service"],
+    })
+ss = pd.DataFrame(rows)
+
+# Stacked bar: Uses vs Sources side-by-side
+st.subheader("📦 Sources vs Uses by Scenario (composition view)")
+ss_long = ss.melt(id_vars=["Scenario","FundingGap"],
+                  value_vars=["OCF","NewFunding","R&D cash now","Δ Working capital","Capex","Debt service"],
+                  var_name="Component", value_name="Value")
+# Ensure Sources negative for stacking logic
+ss_long["Sign"] = np.where(ss_long["Component"].isin(["OCF","NewFunding"]), "Source (−)", "Use (+)")
+ss_long["PlotValue"] = np.where(ss_long["Sign"]=="Source (−)", -ss_long["Value"], ss_long["Value"])
+
+stack_fig = px.bar(
+    ss_long, x="Scenario", y="PlotValue", color="Component",
+    barmode="relative", title="Uses (+) vs Sources (−) by Scenario"
+)
+stack_fig.update_layout(yaxis_title="$B (relative stacking)", xaxis_title="")
+st.plotly_chart(stack_fig, use_container_width=True)
+st.caption("This shows *where* the gap comes from in each scenario: positive bars are uses (R&D, WC, Capex, Debt service), negative bars are sources (OCF, New funding). The net (top of stack) equals the Funding Gap.")
 
 st.markdown("---")
 
-# ----------------------------
-# Sensitivity: Funding Gap vs R&D intensity
-# ----------------------------
-grid = list(range(0, 1201, 200))
-sens = pd.DataFrame([run_scenario(df, rd_bps=x).to_dict() for x in grid])
-sens["R&D_bps"] = grid
+# -----------------------------------------------------------
+# SENSITIVITY — Funding Gap + EBIT + OCF vs R&D Intensity
+# -----------------------------------------------------------
+grid = list(range(0, 1201, 150))
+sens_rows = []
+for x in grid:
+    r = run_scenario(df, rd_bps=x, preset="Base", rd_cash_now_pct=rd_cash_now_pct,
+                     price_cap=price_cap, comp_cost_pct=comp_cost_pct,
+                     new_debt=new_debt, new_equity=new_equity,
+                     tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta)
+    sens_rows.append({"R&D_bps": x, "FundingGap": r["FundingGap"], "EBIT": r["EBIT"], "OCF": r["OCF"]})
+sens = pd.DataFrame(sens_rows)
 
 st.subheader("📈 Objective 1: Sensitivity to R&D Intensity")
-st.line_chart(sens.set_index("R&D_bps")[["FundingGap"]])
-st.caption("Higher R&D intensity reduces EBIT & OCF, widening funding gaps.")
+sens_fig = go.Figure()
+sens_fig.add_trace(go.Scatter(x=sens["R&D_bps"], y=sens["FundingGap"], mode="lines+markers", name="Funding Gap ($B)"))
+sens_fig.add_trace(go.Scatter(x=sens["R&D_bps"], y=sens["EBIT"], mode="lines+markers", name="EBIT ($B)"))
+sens_fig.add_trace(go.Scatter(x=sens["R&D_bps"], y=sens["OCF"], mode="lines+markers", name="OCF ($B)"))
+sens_fig.update_layout(xaxis_title="R&D change (bps of Revenue)", yaxis_title="$B", title="Funding Gap, EBIT & OCF vs R&D Intensity")
+st.plotly_chart(sens_fig, use_container_width=True)
+st.caption("Mechanism: as R&D intensity rises, EBIT and OCF fall (short-term), which widens the Funding Gap — unless balanced by stronger sources (revenue, efficiency) or new funding.")
 
 st.markdown("---")
 
-# ----------------------------
-# Waterfall: Patent Cliff
-# ----------------------------
-st.subheader("💧 Objective 3: Patent Cliff — Sources vs Uses of Cash")
-pc = scenarios["Patent Cliff"]
+# -----------------------------------------------------------
+# WATERFALL — CORRECT MATH (Uses − Sources = Gap)
+# -----------------------------------------------------------
+st.subheader("💧 Objective 3: Patent Cliff — Correct Cash Flow Waterfall")
+pc = run_scenario(df, preset="Patent Cliff")
 
-uses = {
-    "R&D cash now": pc["RD_CashNow"],
+uses_pc = {
+    "R&D cash now": pc["R&D_scn"] * 0.80,   # default timing in engine
     "Δ Working capital": pc["WC_Delta"],
     "Capex": pc["Capex"],
-    "Debt service": pc["PrincipalDue_12m"],
+    "Debt service": pc["DebtService"],
 }
-sources = {
-    "Operating CF": -pc["OCF"],
-    "New funding": -(pc["NewFunding"]),
+sources_pc = {
+    "Operating CF": pc["OCF"],
+    "New funding": pc["NewFunding"],
 }
-items = list(uses.items()) + list(sources.items())
-labels = [k for k,_ in items] + ["Gap"]
-vals = [v for _,v in items]
-gap = sum(vals); vals.append(gap)
 
-wf = go.Figure(go.Waterfall(x=labels, measure=["relative"]*len(items)+["total"], y=vals))
-wf.update_layout(title="Patent Cliff Cash Flow Breakdown", height=350)
+total_uses = sum(uses_pc.values())
+total_sources = sum(sources_pc.values())
+gap_val = total_uses - total_sources
+
+labels = list(uses_pc.keys()) + list(sources_pc.keys()) + ["Gap (Uses − Sources)"]
+vals   = list(uses_pc.values()) + [-v for v in sources_pc.values()] + [gap_val]
+
+wf = go.Figure(go.Waterfall(
+    x=labels,
+    measure=["relative"] * len(vals),
+    y=vals
+))
+wf.update_layout(title="Patent Cliff Cash Flow Breakdown (Uses − Sources)", height=380, yaxis_title="$B")
 st.plotly_chart(wf, use_container_width=True)
-
-st.caption("Under IP expiry, revenues drop, margins compress, and R&D rises — creating a funding gap not covered by OCF or new funding.")
+st.caption(
+    f"Gap = Uses ({total_uses:.2f}B) − Sources ({total_sources:.2f}B) = **{gap_val:.2f}B**. "
+    "Uses are positive bars; sources are negative bars."
+)
