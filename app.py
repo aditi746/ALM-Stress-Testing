@@ -153,48 +153,19 @@ k[5].metric("Liquidity 12m (×)", fmtB(sel["Liquidity12m"] if np.isfinite(sel["L
 
 st.markdown("---")
 
-# -----------------------------------------------------------
-# SCENARIO COMPARISON — Funding Gap + Stacked Sources/Uses
-# -----------------------------------------------------------
-# Build a "base_args" dict from current sliders so Base and all scenarios share them
-base_args = dict(
-    rd_bps=rd_bps,
-    rd_cash_now_pct=rd_cash_now_pct,
-    price_cap=price_cap,
-    comp_cost_pct=comp_cost_pct,
-    new_debt=new_debt,
-    new_equity=new_equity,
-    tax_rate=tax_rate,
-    dso_delta=dso_delta,
-    dpo_delta=dpo_delta,
-    dio_delta=dio_delta
-)
-
-def run_with_preset(preset_name):
-    return run_scenario(df, preset=preset_name, **base_args)
-
-scenarios = {
-    "Base": run_with_preset("Base"),
-    "R&D Surge": run_with_preset("R&D Surge"),
-    "Reg Shock": run_with_preset("Reg Shock"),
-    "Patent Cliff": run_with_preset("Patent Cliff"),
-}
-scn_df = pd.DataFrame(scenarios).T
-
-# Funding Gap bars (now aligned with your current sliders)
-import plotly.express as px
-gap_fig = px.bar(
-    scn_df.reset_index().rename(columns={"index":"Scenario"}),
-    x="Scenario", y="FundingGap", text="FundingGap", title="Funding Gap by Scenario ($B)"
-)
-gap_fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-gap_fig.update_layout(yaxis_title="$B", xaxis_title="")
-st.plotly_chart(gap_fig, use_container_width=True)
-
-# Sources vs Uses composition with the same slider settings
-rows = []
-for name in ["Base", "R&D Surge", "Reg Shock", "Patent Cliff"]:
-    rr = run_with_preset(name)
+# ----------------------------
+# Sources vs Uses by Scenario (composition view) — FIXED
+# ----------------------------
+def scenario_breakdown_with_current_sliders(preset_name: str):
+    """Run scenario using current sliders so comparison stays consistent with KPI cards."""
+    rr = run_scenario(
+        df,
+        rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+        price_cap=price_cap, comp_cost_pct=comp_cost_pct,
+        preset=preset_name, new_debt=new_debt, new_equity=new_equity,
+        tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta
+    )
+    # Build uses/sources consistent with the engine
     uses = {
         "R&D cash now": rr["R&D_scn"] * (rd_cash_now_pct/100.0),
         "Δ Working capital": rr["WC_Delta"],
@@ -203,28 +174,54 @@ for name in ["Base", "R&D Surge", "Reg Shock", "Patent Cliff"]:
     }
     sources = {
         "Operating CF": rr["OCF"],
-        "New funding": rr["NewFunding"],
+        "New funding": rr["NewFunding"],  # <-- standardized name with space
     }
-    rows.append({
-        "Scenario": name,
-        "FundingGap": rr["FundingGap"],
-        **{k:v for k,v in uses.items()},
-        **{k:v for k,v in sources.items()}
-    })
-ss = pd.DataFrame(rows)
-ss_long = ss.melt(id_vars=["Scenario","FundingGap"],
-                  value_vars=["OCF","New funding","R&D cash now","Δ Working capital","Capex","Debt service"],
-                  var_name="Component", value_name="Value")
-ss_long["Sign"] = np.where(ss_long["Component"].isin(["OCF","New funding"]), "Source (−)", "Use (+)")
-ss_long["PlotValue"] = np.where(ss_long["Sign"]=="Source (−)", -ss_long["Value"], ss_long["Value"])
+    return rr, uses, sources
 
-import plotly.express as px
-stack_fig = px.bar(
-    ss_long, x="Scenario", y="PlotValue", color="Component",
-    barmode="relative", title="Uses (+) vs Sources (−) by Scenario"
-)
-stack_fig.update_layout(yaxis_title="$B (relative stacking)", xaxis_title="")
-st.plotly_chart(stack_fig, use_container_width=True)
+rows = []
+for name in ["Base", "R&D Surge", "Reg Shock", "Patent Cliff"]:
+    rr, uses, sources = scenario_breakdown_with_current_sliders(name)
+    row = {
+        "Scenario": name,
+        "FundingGap": float(rr["FundingGap"]),
+        # Sources (keep human-friendly names)
+        "Operating CF": float(sources["Operating CF"]),
+        "New funding": float(sources["New funding"]),
+        # Uses
+        "R&D cash now": float(uses["R&D cash now"]),
+        "Δ Working capital": float(uses["Δ Working capital"]),
+        "Capex": float(uses["Capex"]),
+        "Debt service": float(uses["Debt service"]),
+    }
+    rows.append(row)
+
+ss = pd.DataFrame(rows)
+
+# Melt to long form using the exact column names we just created
+value_cols = ["Operating CF", "New funding", "R&D cash now", "Δ Working capital", "Capex", "Debt service"]
+missing = [c for c in value_cols if c not in ss.columns]
+if missing:
+    st.error(f"Internal error: missing columns for melt: {missing}")
+else:
+    ss_long = ss.melt(
+        id_vars=["Scenario", "FundingGap"],
+        value_vars=value_cols,
+        var_name="Component", value_name="Value"
+    )
+    # Sources are negative for relative stacking; Uses are positive
+    ss_long["Sign"] = np.where(ss_long["Component"].isin(["Operating CF", "New funding"]), "Source (−)", "Use (+)")
+    ss_long["PlotValue"] = np.where(ss_long["Sign"] == "Source (−)", -ss_long["Value"], ss_long["Value"])
+
+    stack_fig = px.bar(
+        ss_long, x="Scenario", y="PlotValue", color="Component",
+        barmode="relative", title="Uses (+) vs Sources (−) by Scenario"
+    )
+    stack_fig.update_layout(yaxis_title="$B (relative stacking)", xaxis_title="")
+    st.plotly_chart(stack_fig, use_container_width=True)
+    st.caption(
+        "Positive bars are uses (R&D, working capital, capex, debt service); "
+        "negative bars are sources (OCF, new funding). The net height equals the Funding Gap."
+    )
 
 # -----------------------------------------------------------
 # SENSITIVITY — Funding Gap + EBIT + OCF vs R&D Intensity
