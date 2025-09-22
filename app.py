@@ -154,7 +154,7 @@ st.caption("Higher R&D intensity reduces EBIT & OCF, widening funding gaps.")
 st.markdown("---")
 
 # ----------------------------
-# Waterfall: Patent Cliff
+# Correct Waterfall: Patent Cliff
 # ----------------------------
 st.subheader("💧 Objective 3: Patent Cliff — Sources vs Uses of Cash")
 pc = scenarios["Patent Cliff"]
@@ -166,16 +166,26 @@ uses = {
     "Debt service": pc["PrincipalDue_12m"],
 }
 sources = {
-    "Operating CF": -pc["OCF"],
-    "New funding": -(pc["NewFunding"]),
+    "Operating CF": pc["OCF"],
+    "New funding": pc["NewFunding"],
 }
-items = list(uses.items()) + list(sources.items())
-labels = [k for k,_ in items] + ["Gap"]
-vals = [v for _,v in items]
-gap = sum(vals); vals.append(gap)
 
-wf = go.Figure(go.Waterfall(x=labels, measure=["relative"]*len(items)+["total"], y=vals))
-wf.update_layout(title="Patent Cliff Cash Flow Breakdown", height=350)
+total_uses = sum(uses.values())
+total_sources = sum(sources.values())
+gap = total_uses - total_sources
+
+labels = list(uses.keys()) + list(sources.keys()) + ["Gap"]
+vals = list(uses.values()) + [-v for v in sources.values()] + [gap]
+
+wf = go.Figure(go.Waterfall(
+    x=labels,
+    measure=["relative"]*len(vals),
+    y=vals
+))
+wf.update_layout(title="Patent Cliff Cash Flow Breakdown (Uses – Sources)", height=400)
 st.plotly_chart(wf, use_container_width=True)
 
-st.caption("Under IP expiry, revenues drop, margins compress, and R&D rises — creating a funding gap not covered by OCF or new funding.")
+st.caption(
+    f"Gap = Total Uses ({total_uses:.2f}B) – Total Sources ({total_sources:.2f}B) = {gap:.2f}B. "
+    "This highlights that under IP expiry, cash outflows exceed operating inflows, leaving a funding shortfall."
+)
