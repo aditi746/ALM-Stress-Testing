@@ -238,36 +238,87 @@ st.plotly_chart(fig_bar2, use_container_width=True)
 
 st.caption("The bar chart summarizes the regulatory impact on EBIT. Base Case profitability is compared with the Reg Shock scenario.")
 
-# ============================
-# Objective 3 — WHO-style Waterfall under Patent Cliff
-# ============================
-pc = scenarios["Patent Cliff"]
-need = pc["RD_CashNow"] + pc["WC_Delta"] + pc["Capex"] + pc["PrincipalDue_12m"]
-secured_ocf = max(pc["OCF"], 0.0)
-secured_new = max(pc["NewFunding"], 0.0)
-expected_pipeline = max(df0.iloc[-1]["Undrawn_Revolver"], 0.0)  # treat undrawn as expected
+# ----------------------------
+# ALM Waterfall (Your Parameters)
+# ----------------------------
+st.subheader("💧 ALM Funding Gap — Waterfall View")
 
-gap_val = max(need - (secured_ocf + secured_new + expected_pipeline), 0.0)
+wf_scn = st.selectbox(
+    "Select scenario for waterfall",
+    ["Base", "R&D Surge", "Reg Shock", "Patent Cliff"],
+    index=3
+)
+
+wf_row = run_scenario(
+    df,
+    rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+    price_cap=price_cap, comp_cost_pct=comp_cost_pct,
+    preset=wf_scn, new_debt=new_debt, new_equity=new_equity,
+    tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta
+)
+
+# Step 1: Need (uses)
+rd_cash_now = float(wf_row["R&D_scn"] * (rd_cash_now_pct/100.0))
+wc_delta    = float(wf_row["WC_Delta"])
+capex       = float(wf_row["Capex"])
+debt_serv   = float(wf_row["DebtService"])
+need = rd_cash_now + wc_delta + capex + debt_serv
+
+# Step 2: Funding
+oper_cf     = max(float(wf_row["OCF"]), 0.0)
+new_funding = max(float(wf_row["NewFunding"]), 0.0)
+pipeline    = max(float(wf_row["Undrawn_Revolver"]), 0.0)
+
+# Step 3: Gap
+gap_val = max(need - (oper_cf + new_funding + pipeline), 0.0)
 gap_pct = (gap_val/need*100.0) if need > 0 else 0.0
 
-labels = ["Total cash need",
-          "Operating CF (secured)",
-          "Committed funding (secured)",
-          "Pipeline / Undrawn (expected)",
-          f"Funding gap ({gap_pct:.0f}%)"]
-values  = [need, -secured_ocf, -secured_new, -expected_pipeline, 0]
-measures = ["absolute","relative","relative","relative","total"]
+steps = [
+    {"label": "Total Cash Need", "value": need, "color": "#0b2b53"},
+    {"label": "Operating CF (secured)", "value": -oper_cf, "color": "#1aa1ff"},
+    {"label": "New Funding (secured)", "value": -new_funding, "color": "#1aa1ff"},
+    {"label": "Undrawn Revolver (expected)", "value": -pipeline, "color": "#9aa0a6"},
+    {"label": f"Funding Gap ({gap_pct:.0f}%)", "value": gap_val, "color": "#d61f45"},
+]
 
-colors = ["#0b2b53","#1aa1ff","#1aa1ff","#9aa0a6","#d61f45"]
+# Build stacked-bar style waterfall
+x_labels, bar_values, bar_base, bar_colors = [], [], [], []
+running = 0
+for step in steps:
+    x_labels.append(step["label"])
+    bar_values.append(step["value"])
+    bar_colors.append(step["color"])
+    if step["label"].startswith("Total"):
+        bar_base.append(0)
+        running = step["value"]
+    elif step["label"].startswith("Funding Gap"):
+        bar_base.append(0)
+    else:
+        bar_base.append(running)
+        running += step["value"]
 
-wf_fig = go.Figure(go.Waterfall(x=labels, y=values, measure=measures,
-                                connector={"line":{"color":"#cccccc","width":1}},
-                                text=[f"{need:.2f}", f"{secured_ocf:.2f}", f"{secured_new:.2f}", f"{expected_pipeline:.2f}", f"{gap_val:.2f}"],
-                                textposition="outside"))
-# per-bar color via bar chart emulation is not needed here; Waterfall supports a single marker color,
-# so we mimic the WHO style by setting marker.color via per-trace array using update_traces in go >= 5.18
-wf_fig.update_traces(marker=dict(color=colors))
-wf_fig.update_layout(title="Objective 3: Patent Cliff — Need vs Secured vs Expected → Funding Gap",
-                     yaxis_title="$B", height=420, margin=dict(l=10,r=10,t=60,b=10))
-st.plotly_chart(wf_fig, use_container_width=True)
-st.caption("Need = R&D cash now + ΔWC + Capex + Debt service. Secured (OCF, new funding) and Expected (undrawn credit line) are deducted. Remainder is the Funding Gap.")
+fig = go.Figure()
+fig.add_trace(go.Bar(
+    x=x_labels,
+    y=bar_values,
+    base=bar_base,
+    marker_color=bar_colors,
+    text=[f"{abs(v):,.2f}" for v in bar_values],
+    textposition="outside"
+))
+
+fig.update_layout(
+    title=f"{wf_scn}: Cash Need vs Funding → Funding Gap",
+    yaxis_title="$B",
+    showlegend=False,
+    height=420,
+    margin=dict(l=20,r=20,t=50,b=20)
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+st.caption(
+    f"Total Cash Need = R&D cash now + ΔWC + Capex + Debt service. "
+    f"Secured (Operating CF, new funding) and Expected (undrawn revolver) are deducted. "
+    f"The remainder is the **Funding Gap = {gap_val:.2f}B ({gap_pct:.0f}% of need)**."
+)
