@@ -218,26 +218,6 @@ st.plotly_chart(wf_fig2, use_container_width=True)
 
 st.caption("The waterfall shows how regulation reduces profitability: Revenue falls with price caps, compliance costs increase Opex, and final EBIT is lower.")
 
-# ----------------------------
-# Bar Chart
-# ----------------------------
-bar_df = pd.DataFrame({
-    "Scenario": ["Base Case", "Reg Shock"],
-    "EBIT": [base_case["EBIT"], reg_case["EBIT"]]
-})
-
-fig_bar2 = px.bar(
-    bar_df, x="Scenario", y="EBIT", 
-    color="Scenario", text="EBIT",
-    labels={"EBIT":"EBIT ($B)"},
-    title="EBIT Comparison: Base vs Regulatory Shock"
-)
-fig_bar2.update_traces(texttemplate='%{text:.2f}', textposition='outside')
-
-st.plotly_chart(fig_bar2, use_container_width=True)
-
-st.caption("The bar chart summarizes the regulatory impact on EBIT. Base Case profitability is compared with the Reg Shock scenario.")
-
 # ============================
 # Objective 3 — IP Expiry & Competition Impact (Waterfall)
 # ============================
