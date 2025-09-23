@@ -238,87 +238,55 @@ st.plotly_chart(fig_bar2, use_container_width=True)
 
 st.caption("The bar chart summarizes the regulatory impact on EBIT. Base Case profitability is compared with the Reg Shock scenario.")
 
-# ----------------------------
-# ALM Waterfall (Your Parameters)
-# ----------------------------
-st.subheader("💧 ALM Funding Gap — Waterfall View")
+# ============================
+# Objective 3 — IP Expiry & Competition Impact (Waterfall)
+# ============================
 
-wf_scn = st.selectbox(
-    "Select scenario for waterfall",
-    ["Base", "R&D Surge", "Reg Shock", "Patent Cliff"],
-    index=3
-)
+st.markdown("---")
+st.subheader("⚖️ Objective 3: Impact of IP Expiry & Competition on Financial Performance")
 
-wf_row = run_scenario(
-    df,
-    rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
-    price_cap=price_cap, comp_cost_pct=comp_cost_pct,
-    preset=wf_scn, new_debt=new_debt, new_equity=new_equity,
-    tax_rate=tax_rate, dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta
-)
+# Run base and patent cliff scenario
+base_case = run_scenario(df0,
+                         rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+                         new_debt=new_debt, new_equity=new_equity, tax_rate=tax_rate,
+                         dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta,
+                         ocf_adj=ocf_adj, preset="Base")
 
-# Step 1: Need (uses)
-rd_cash_now = float(wf_row["R&D_scn"] * (rd_cash_now_pct/100.0))
-wc_delta    = float(wf_row["WC_Delta"])
-capex       = float(wf_row["Capex"])
-debt_serv   = float(wf_row["DebtService"])
-need = rd_cash_now + wc_delta + capex + debt_serv
+cliff_case = run_scenario(df0,
+                          rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+                          new_debt=new_debt, new_equity=new_equity, tax_rate=tax_rate,
+                          dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta,
+                          ocf_adj=ocf_adj, preset="Patent Cliff")
 
-# Step 2: Funding
-oper_cf     = max(float(wf_row["OCF"]), 0.0)
-new_funding = max(float(wf_row["NewFunding"]), 0.0)
-pipeline    = max(float(wf_row["Undrawn_Revolver"]), 0.0)
+# Calculate impacts
+revenue_base = base_case["Revenue_scn"]
+revenue_loss = cliff_case["Revenue_scn"] - base_case["Revenue_scn"]   # negative
+margin_erosion = -( (cliff_case["COGS"] + cliff_case["Opex_exR&D"]) -
+                    (base_case["COGS"] + base_case["Opex_exR&D"]) )   # extra costs/erosion
+ebit_cliff = cliff_case["EBIT"]
 
-# Step 3: Gap
-gap_val = max(need - (oper_cf + new_funding + pipeline), 0.0)
-gap_pct = (gap_val/need*100.0) if need > 0 else 0.0
+# Build waterfall
+wf_labels = ["Revenue (Base)", "Patent Expiry Impact", "Competition / Margin Erosion", "EBIT (Patent Cliff)"]
+wf_values = [revenue_base, revenue_loss, margin_erosion, ebit_cliff]
+wf_measures = ["absolute", "relative", "relative", "total"]
 
-steps = [
-    {"label": "Total Cash Need", "value": need, "color": "#0b2b53"},
-    {"label": "Operating CF (secured)", "value": -oper_cf, "color": "#1aa1ff"},
-    {"label": "New Funding (secured)", "value": -new_funding, "color": "#1aa1ff"},
-    {"label": "Undrawn Revolver (expected)", "value": -pipeline, "color": "#9aa0a6"},
-    {"label": f"Funding Gap ({gap_pct:.0f}%)", "value": gap_val, "color": "#d61f45"},
-]
-
-# Build stacked-bar style waterfall
-x_labels, bar_values, bar_base, bar_colors = [], [], [], []
-running = 0
-for step in steps:
-    x_labels.append(step["label"])
-    bar_values.append(step["value"])
-    bar_colors.append(step["color"])
-    if step["label"].startswith("Total"):
-        bar_base.append(0)
-        running = step["value"]
-    elif step["label"].startswith("Funding Gap"):
-        bar_base.append(0)
-    else:
-        bar_base.append(running)
-        running += step["value"]
-
-fig = go.Figure()
-fig.add_trace(go.Bar(
-    x=x_labels,
-    y=bar_values,
-    base=bar_base,
-    marker_color=bar_colors,
-    text=[f"{abs(v):,.2f}" for v in bar_values],
+wf_fig3 = go.Figure(go.Waterfall(
+    x=wf_labels,
+    y=wf_values,
+    measure=wf_measures,
+    connector={"line": {"color": "gray"}},
+    text=[f"{v:.2f}" for v in wf_values],
     textposition="outside"
 ))
-
-fig.update_layout(
-    title=f"{wf_scn}: Cash Need vs Funding → Funding Gap",
+wf_fig3.update_layout(
+    title="Patent Cliff: Step-by-Step Erosion of Profitability",
     yaxis_title="$B",
-    showlegend=False,
-    height=420,
-    margin=dict(l=20,r=20,t=50,b=20)
+    height=420
 )
 
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(wf_fig3, use_container_width=True)
 
 st.caption(
-    f"Total Cash Need = R&D cash now + ΔWC + Capex + Debt service. "
-    f"Secured (Operating CF, new funding) and Expected (undrawn revolver) are deducted. "
-    f"The remainder is the **Funding Gap = {gap_val:.2f}B ({gap_pct:.0f}% of need)**."
+    "This waterfall shows how IP expiry reduces revenues, adds competition-driven margin erosion, "
+    "and lowers EBIT in the Patent Cliff scenario compared to the Base Case."
 )
