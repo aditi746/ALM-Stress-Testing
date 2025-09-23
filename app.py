@@ -169,37 +169,74 @@ st.caption("As R&D intensity rises, funding gaps grow, DSCR weakens (red), and r
 st.markdown("---")
 
 # ============================
-# Objective 2 — Scenario Comparison (Funding Gap)
+# Objective 2 — Regulatory Impact on Profitability
 # ============================
-scenarios = {
-    "Base": run_scenario(df0,
+
+st.markdown("---")
+st.subheader("💰 Objective 2: Financial Impact of Regulatory Changes on Profitability")
+
+# Run base and regulatory shock scenarios
+base_case = run_scenario(df0,
                          rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
                          new_debt=new_debt, new_equity=new_equity, tax_rate=tax_rate,
                          dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta,
-                         ocf_adj=ocf_adj, preset="Base"),
-    "Reg Shock": run_scenario(df0,
-                              rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
-                              new_debt=new_debt, new_equity=new_equity, tax_rate=tax_rate,
-                              dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta,
-                              ocf_adj=ocf_adj, preset="Reg Shock"),
-    "R&D Surge": run_scenario(df0,
-                              rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
-                              new_debt=new_debt, new_equity=new_equity, tax_rate=tax_rate,
-                              dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta,
-                              ocf_adj=ocf_adj, preset="R&D Surge"),
-    "Patent Cliff": run_scenario(df0,
-                                 rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
-                                 new_debt=new_debt, new_equity=new_equity, tax_rate=tax_rate,
-                                 dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta,
-                                 ocf_adj=ocf_adj, preset="Patent Cliff"),
-}
-df_bar = pd.DataFrame(scenarios).T
-fig2 = px.bar(df_bar, x=df_bar.index, y="FundingGap",
-              labels={"x":"Scenario","FundingGap":"Funding Gap ($B)"},
-              title="Objective 2: Funding Gap Across Scenarios (current sliders applied)")
-st.plotly_chart(fig2, use_container_width=True)
+                         ocf_adj=ocf_adj, preset="Base")
 
-st.markdown("---")
+reg_case = run_scenario(df0,
+                        rd_bps=rd_bps, rd_cash_now_pct=rd_cash_now_pct,
+                        new_debt=new_debt, new_equity=new_equity, tax_rate=tax_rate,
+                        dso_delta=dso_delta, dpo_delta=dpo_delta, dio_delta=dio_delta,
+                        ocf_adj=ocf_adj, preset="Reg Shock")
+
+# ----------------------------
+# Waterfall Chart
+# ----------------------------
+revenue_base = base_case["Revenue_scn"]
+price_cap_effect = reg_case["Revenue_scn"] - base_case["Revenue_scn"]  # negative
+compliance_effect = -(reg_case["Opex_exR&D"] - base_case["Opex_exR&D"])
+ebit_reg = reg_case["EBIT"]
+
+wf_labels = ["Revenue (Base)", "Price Cap Impact", "Compliance Costs", "EBIT (Reg Shock)"]
+wf_values = [revenue_base, price_cap_effect, compliance_effect, ebit_reg]
+wf_measures = ["absolute", "relative", "relative", "total"]
+
+wf_fig2 = go.Figure(go.Waterfall(
+    x=wf_labels, 
+    y=wf_values, 
+    measure=wf_measures,
+    connector={"line": {"color": "gray"}},
+    text=[f"{v:.2f}" for v in wf_values],
+    textposition="outside"
+))
+wf_fig2.update_layout(
+    title="Regulatory Shock: Step-by-Step Profitability Erosion",
+    yaxis_title="$B",
+    height=420
+)
+
+st.plotly_chart(wf_fig2, use_container_width=True)
+
+st.caption("The waterfall shows how regulation reduces profitability: Revenue falls with price caps, compliance costs increase Opex, and final EBIT is lower.")
+
+# ----------------------------
+# Bar Chart
+# ----------------------------
+bar_df = pd.DataFrame({
+    "Scenario": ["Base Case", "Reg Shock"],
+    "EBIT": [base_case["EBIT"], reg_case["EBIT"]]
+})
+
+fig_bar2 = px.bar(
+    bar_df, x="Scenario", y="EBIT", 
+    color="Scenario", text="EBIT",
+    labels={"EBIT":"EBIT ($B)"},
+    title="EBIT Comparison: Base vs Regulatory Shock"
+)
+fig_bar2.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+
+st.plotly_chart(fig_bar2, use_container_width=True)
+
+st.caption("The bar chart summarizes the regulatory impact on EBIT. Base Case profitability is compared with the Reg Shock scenario.")
 
 # ============================
 # Objective 3 — WHO-style Waterfall under Patent Cliff
